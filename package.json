@@ -1,0 +1,31 @@
+{
+  "name": "tfetch",
+  "version": "1.0.0",
+  "description": "",
+  "source": "src/index.ts",
+  "main": "lib/index.min.js",
+  "types": "lib/types.d.ts",
+  "scripts": {
+    "build": "yarn run clean && parcel build --no-source-maps",
+    "clean": "rimraf lib",
+    "start": "parcel"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@parcel/compressor-brotli": "^2.9.3",
+    "@parcel/compressor-gzip": "^2.9.3",
+    "@parcel/packager-ts": "2.9.3",
+    "@parcel/transformer-typescript-tsc": "^2.9.3",
+    "@parcel/transformer-typescript-types": "2.9.3",
+    "parcel": "^2.9.3",
+    "rimraf": "^5.0.1",
+    "typescript": "^5.1.6"
+  },
+  "targets": {
+    "main": {
+      "optimize": true
+    }
+  }
+}
