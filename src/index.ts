@@ -121,7 +121,7 @@ const defaultOptions: Options = {
  * @param {Options} [defaults = {}]
  * @returns {qlfetch}
  */
-function create(defaults: Options = defaultOptions): typeof qlfetch {
+function create(defaults: Options = defaultOptions): any {
   /**
    * @private
    * @template T, U

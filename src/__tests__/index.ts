@@ -1,4 +1,4 @@
-import qlfetch from '..'
+import qlfetch from '../../lib/index.min.js'
 
 const jsonRes = {
   id: 1,

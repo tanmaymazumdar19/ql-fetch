@@ -1,0 +1,13 @@
+.github
+.parcel-cache
+.vscode
+dist
+node_modules
+src
+.eslintrc.mjs
+.gitignore
+.parcelrc
+.prettierrc
+jest.config.js
+tsconfig.json
+yarn.lock
