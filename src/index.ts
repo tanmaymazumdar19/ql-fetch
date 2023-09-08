@@ -1,8 +1,8 @@
 import InterceptorManager from './InterceptorManager'
 
-export type RequestHeaders = { [name: string]: string } | Headers
+export type RequestHeaders = Record<string, string> | Headers
 
-export type Options = {
+export interface Options {
   // the URL to request
   url?: string
 
@@ -71,9 +71,15 @@ export type Options = {
 
   // The mode of the request (e.g., cors, no-cors, same-origin, or navigate.). Defaults to cors.
   mode?: RequestMode
+
+  // The key to cache the response.
+  tag?: string
+
+  // Invalidate the cached data for the given tag.
+  invalidateTag?: string
 }
 
-export type Response<T> = {
+export interface Response<T> {
   status?: number
   statusText?: string
   config: Options // the request configuration
@@ -86,64 +92,36 @@ export type Response<T> = {
   bodyUsed?: boolean
 }
 
-export type BodylessMethod = <T = any>(url: string, config?: Options) => Promise<Response<T>>
+export type BodylessMethod = <T = any>(url: string, config?: Options) => Promise<Response<T | unknown>>
 
-export type BodyMethod = <T = any>(url: string, body?: any, config?: Options) => Promise<Response<T>>
+export type BodyMethod = <T = any>(url: string, body?: any, config?: Options) => Promise<Response<T | unknown>>
 
-export type CancelToken = { (executor: Function): AbortSignal; source(): { token: AbortSignal; cancel: () => void } }
+export interface CancelToken {
+  // eslint-disable-next-line @typescript-eslint/ban-types
+  (executor: Function): AbortSignal
+  source: () => { token: AbortSignal; cancel: () => void }
+}
 
-export type CancelTokenSourceMethod = () => { token: AbortSignal; cancel: () => void }
+export type CancelTokenSourceMethod = () => {
+  token: AbortSignal
+  cancel: () => void
+}
+
+const defaultHeaders = {
+  Accept: 'application/json, text/plain, */*',
+  'Content-Type': 'application/json',
+}
+
+const defaultOptions: Options = {
+  headers: defaultHeaders,
+}
 
 /**
  * @public
  * @param {Options} [defaults = {}]
  * @returns {qlfetch}
  */
-function create(defaults: Options = {}) {
-  /**
-   * @public
-   * @template T
-   * @type {(<T = any>(config?: Options) => Promise<Response<T>>) | (<T = any>(url: string, config?: Options) => Promise<Response<T>>)}
-   */
-  qlfetch.request = qlfetch
-
-  /** @public @type {BodylessMethod} */
-  qlfetch.get = (url: string, config: any) => qlfetch(url, config, 'get')
-
-  /** @public @type {BodylessMethod} */
-  qlfetch.delete = (url: string, config: any) => qlfetch(url, config, 'delete')
-
-  /** @public @type {BodylessMethod} */
-  qlfetch.head = (url: string, config: any) => qlfetch(url, config, 'head')
-
-  /** @public @type {BodylessMethod} */
-  qlfetch.options = (url: string, config: any) => qlfetch(url, config, 'options')
-
-  /** @public @type {BodyMethod} */
-  qlfetch.post = (url: string, data: any, config: any) => qlfetch(url, config, 'post', data)
-
-  /** @public @type {BodyMethod} */
-  qlfetch.put = (url: string, data: any, config: any) => qlfetch(url, config, 'put', data)
-
-  /** @public @type {BodyMethod} */
-  qlfetch.patch = (url: string, data: any, config: any) => qlfetch(url, config, 'patch', data)
-
-  /** @public */
-  qlfetch.all = Promise.all.bind(Promise)
-
-  /**
-   * @public
-   * @template Args, R
-   * @param {(...args: Args[]) => R} fn
-   * @returns {(array: Args[]) => R}
-   */
-  qlfetch.spread = (fn: any) => fn.apply.bind(fn, fn)
-
-  qlfetch.interceptors = {
-    request: new InterceptorManager(),
-    response: new InterceptorManager(),
-  }
-
+function create(defaults: Options = defaultOptions): typeof qlfetch {
   /**
    * @private
    * @template T, U
@@ -152,9 +130,9 @@ function create(defaults: Options = {}) {
    * @param {boolean} [lowerCase]
    * @returns {{} & (T | U)}
    */
-  function deepMerge(opts: any, overrides: any, lowerCase: boolean = false) {
-    let out: any = {},
-      i
+  function deepMerge(opts: any, overrides: any, lowerCase: boolean = false): any {
+    const out: any = {}
+    let i
     if (Array.isArray(opts)) {
       return opts.concat(overrides)
     }
@@ -173,6 +151,203 @@ function create(defaults: Options = {}) {
     return out
   }
 
+  const cache: any = {}
+
+  /**
+   * Issues a request.
+   * @public
+   * @template T
+   * @param {string | Options} urlOrConfig
+   * @param {Options} [config = {}]
+   * @param {any} [_method] (internal)
+   * @param {any} [data] (internal)
+   * @param {never} [credentials] (internal)
+   * @returns {Promise<Response<T>>}
+   */
+  async function qlfetch<T>(
+    urlOrConfig: string | Options,
+    config: Options = defaultOptions,
+    _method: any = 'GET',
+    data: any = undefined,
+  ): Promise<Response<T>> {
+    let url: string = typeof urlOrConfig !== 'string' ? ((config = urlOrConfig).url as string) : urlOrConfig
+
+    let response: Response<T> = { config }
+
+    // Merge the global config with the default config.
+    let options: Options = deepMerge(defaults, config)
+
+    // Perform cached data invalidation.
+    if (options?.invalidateTag) {
+      const tag = cache[options?.invalidateTag]
+
+      if (tag) {
+        delete cache[options?.invalidateTag]
+      }
+    }
+
+    // If the response was alread cached, then return the cached data.
+    if (options.tag && cache[options.tag as string]) {
+      const _res = cache[options.tag as string]
+      return await Promise.resolve(_res)
+    }
+
+    // Intecept the req object.
+    if (qlfetch.interceptors.request.handlers.length > 0) {
+      qlfetch.interceptors.request.handlers.forEach(handler => {
+        if (handler !== null) {
+          const resultConfig = handler.done(config)
+          options = deepMerge(options, resultConfig || {})
+        }
+      })
+    }
+
+    const customHeaders: RequestHeaders = {}
+
+    // Transform the req object.
+    data = data ?? options.data
+    ;(options?.transformRequest ?? []).forEach((f: any) => {
+      data = f(data, options.headers) ?? data
+    })
+
+    // Include the auth token into the req headers.
+    if (options?.auth) {
+      customHeaders.authorization = options.auth as string
+    }
+
+    if (typeof data === 'object' && typeof data.append !== 'function' && typeof data.text !== 'function') {
+      data = JSON.stringify(data)
+      customHeaders['content-type'] = 'application/json'
+    }
+
+    try {
+      // @ts-expect-error providing the cookie name without header name is nonsensical anyway
+      customHeaders[options?.xsrfHeaderName] = decodeURIComponent(
+        // @ts-expect-error accessing match()[2] throws for no match, which is intentional
+        document.cookie.match(RegExp('(^|; )' + options?.xsrfCookieName + '=([^;]*)'))[2],
+      )
+    } catch (e) {}
+
+    if (options?.baseURL) {
+      url = url?.replace(/^(?!.*\/\/)\/?/, options.baseURL + '/')
+    }
+
+    if (options?.params) {
+      url +=
+        (~url?.indexOf('?') !== 0 ? '&' : '?') +
+        (options?.paramsSerializer?.(options.params) ?? new URLSearchParams(options.params))
+    }
+
+    response.config = options
+
+    const fetchFunc = options?.fetch ?? fetch
+    const request: RequestInit = {
+      method: (_method || options.method || 'get').toUpperCase(),
+      body: data,
+      headers: deepMerge(options.headers, customHeaders, true),
+      credentials: options.withCredentials !== null ? 'include' : 'same-origin',
+      signal: options.cancelToken,
+      mode: options.mode,
+    }
+
+    return await fetchFunc(url, request).then((res: any) => {
+      if (options?.responseType === 'stream') {
+        response.data = res.body
+        return response
+      }
+
+      response.url = url
+      response.status = res?.status
+      response.statusText = res?.statusText
+      response.headers = deepMerge(options.headers, customHeaders, true)
+      // eslint-disable-next-line
+      // @ts-ignore
+      response.request = request
+
+      return res[options?.responseType ?? 'text']()
+        .then((data: any) => {
+          response.data = data
+          // its okay if this fails: response.data will be the unparsed value:
+          const _data = (options.transformResponse ?? [])?.reduce((_data: any, f: any) => f(_data) ?? _data, data)
+          response.data = JSON.parse(_data)
+        })
+        .catch(Object)
+        .then(async () => {
+          const ok = options?.validateStatus?.(res.status) ?? res.ok
+          if (res.status >= 200 && res.status < 300 && qlfetch.interceptors.response.handlers.length > 0) {
+            qlfetch.interceptors.response.handlers.forEach(handler => {
+              if (handler) {
+                const interceptedResponse = handler.done(response)
+
+                if (interceptedResponse) response = interceptedResponse
+              }
+            })
+          } else {
+            qlfetch.interceptors.response.handlers.forEach(handler => {
+              if (handler) {
+                const interceptedResponse = handler.error(response)
+
+                if (interceptedResponse) response = interceptedResponse
+              }
+            })
+          }
+
+          // Perform the caching the data.
+          if (options?.tag) {
+            cache[options.tag as string] = response
+          }
+
+          return ok ? response : await Promise.reject(response)
+        })
+    })
+  }
+
+  /**
+   * @public
+   * @template T
+   * @type {(<T = any>(config?: Options) => Promise<Response<T>>) | (<T = any>(url: string, config?: Options) => Promise<Response<T>>)}
+   */
+  qlfetch.request = qlfetch
+
+  /** @public @type {BodylessMethod} */
+  qlfetch.get = async (url: string, config: any = defaultOptions) => await qlfetch(url, config, 'get')
+
+  /** @public @type {BodylessMethod} */
+  qlfetch.delete = async (url: string, config: any = defaultOptions) => await qlfetch(url, config, 'delete')
+
+  /** @public @type {BodylessMethod} */
+  qlfetch.head = async (url: string, config: any = defaultOptions) => await qlfetch(url, config, 'head')
+
+  /** @public @type {BodylessMethod} */
+  qlfetch.options = async (url: string, config: any = defaultOptions) => await qlfetch(url, config, 'options')
+
+  /** @public @type {BodyMethod} */
+  qlfetch.post = async (url: string, data: any, config: any = defaultOptions) =>
+    await qlfetch(url, config, 'post', data)
+
+  /** @public @type {BodyMethod} */
+  qlfetch.put = async (url: string, data: any, config: any = defaultOptions) => await qlfetch(url, config, 'put', data)
+
+  /** @public @type {BodyMethod} */
+  qlfetch.patch = async (url: string, data: any, config: any = defaultOptions) =>
+    await qlfetch(url, config, 'patch', data)
+
+  /** @public */
+  qlfetch.all = Promise.all.bind(Promise)
+
+  /**
+   * @public
+   * @template Args, R
+   * @param {(...args: Args[]) => R} fn
+   * @returns {(array: Args[]) => R}
+   */
+  qlfetch.spread = (fn: any) => fn.apply.bind(fn, fn)
+
+  qlfetch.interceptors = {
+    request: new InterceptorManager(),
+    response: new InterceptorManager(),
+  }
+
   /**
    * CancelToken
    * @private
@@ -185,7 +360,6 @@ function create(defaults: Options = {}) {
     }
 
     const ac = new AbortController()
-
     executor(ac.abort.bind(ac))
 
     return ac.signal
@@ -203,127 +377,6 @@ function create(defaults: Options = {}) {
       token: ac.signal,
       cancel: ac.abort.bind(ac),
     }
-  }
-
-  /**
-   * Issues a request.
-   * @public
-   * @template T
-   * @param {string | Options} urlOrConfig
-   * @param {Options} [config = {}]
-   * @param {any} [_method] (internal)
-   * @param {any} [data] (internal)
-   * @param {never} [credentials] (internal)
-   * @returns {Promise<Response<T>>}
-   */
-  function qlfetch<T>(
-    urlOrConfig: string | Options,
-    config: Options,
-    _method: any,
-    data: any = undefined,
-  ): Promise<Response<T>> {
-    let url: string = typeof urlOrConfig != 'string' ? ((config = urlOrConfig).url as string) : urlOrConfig
-
-    let response: Response<T> = { config }
-
-    let options: Options = deepMerge(defaults, config)
-
-    if (qlfetch.interceptors.request.handlers.length > 0) {
-      qlfetch.interceptors.request.handlers.forEach(handler => {
-        if (handler !== null) {
-          const resultConfig = handler.done(config)
-          options = deepMerge(options, resultConfig || {})
-        }
-      })
-    }
-
-    const customHeaders: RequestHeaders = {}
-
-    data = data ?? options.data
-    ;(options?.transformRequest ?? []).map((f: any) => {
-      data = f(data, options.headers) ?? data
-    })
-
-    if (options?.auth) {
-      customHeaders.authorization = options.auth
-    }
-
-    if (data && typeof data === 'object' && typeof data.append !== 'function' && typeof data.text !== 'function') {
-      data = JSON.stringify(data)
-      customHeaders['content-type'] = 'application/json'
-    }
-
-    try {
-      // @ts-ignore providing the cookie name without header name is nonsensical anyway
-      customHeaders[options?.xsrfHeaderName] = decodeURIComponent(
-        // @ts-ignore accessing match()[2] throws for no match, which is intentional
-        document.cookie.match(RegExp('(^|; )' + options?.xsrfCookieName + '=([^;]*)'))[2],
-      )
-    } catch (e) {}
-
-    if (options?.baseURL) {
-      url = url?.replace(/^(?!.*\/\/)\/?/, options.baseURL + '/')
-    }
-
-    if (options?.params) {
-      url +=
-        // @ts-ignore
-        (~url?.indexOf('?') ? '&' : '?') +
-        (options?.paramsSerializer?.(options.params) ?? new URLSearchParams(options.params))
-    }
-
-    const fetchFunc = options?.fetch ?? fetch
-
-    return fetchFunc(url, {
-      method: (_method || options.method || 'get').toUpperCase(),
-      body: data,
-      headers: deepMerge(options.headers, customHeaders, true),
-      credentials: options.withCredentials ? 'include' : 'same-origin',
-      signal: options.cancelToken,
-      mode: options.mode,
-    }).then((res: any) => {
-      for (const i in res) {
-        // @ts-ignore
-        if (typeof res[i] != 'function') response[i] = res[i]
-      }
-
-      if (options?.responseType === 'stream') {
-        response.data = res.body
-        return response
-      }
-
-      return res[options?.responseType ?? 'text']()
-        .then((data: any) => {
-          response.data = data
-          // its okay if this fails: response.data will be the unparsed value:
-          response.data = (options.transformResponse ?? [])?.reduce(
-            (_data: any, f: any) => f(_data) ?? _data,
-            JSON.parse(data),
-          )
-        })
-        .catch(Object)
-        .then(() => {
-          const ok = options?.validateStatus?.(res.status) ?? res.ok
-          if (res.status >= 200 && res.status < 300 && qlfetch.interceptors.response.handlers.length > 0) {
-            qlfetch.interceptors.response.handlers.forEach(handler => {
-              if (handler !== null) {
-                const interceptedResponse = handler.done(response)
-
-                if (interceptedResponse) response = interceptedResponse
-              }
-            })
-          } else {
-            qlfetch.interceptors.response.handlers.forEach(handler => {
-              if (handler !== null) {
-                const interceptedResponse = handler.error(response)
-
-                if (interceptedResponse) response = interceptedResponse
-              }
-            })
-          }
-          return ok ? response : Promise.reject({ response })
-        })
-    })
   }
 
   /**
